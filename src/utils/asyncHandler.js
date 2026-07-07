@@ -11,6 +11,8 @@ const asyncHandler = (requestHandlerFxn) => (req,res,next) => {
 }
 export { asyncHandler };
 
+/** Same work using try catch */
+
 // const asyncHandler = (requestHandlerFxn) => async (error,req,res,next) => {
 //     try {
 //         await requestHandlerFxn(req,res,next)
