@@ -3,7 +3,14 @@ import {
     registerUser,
     loginUser,
     logoutUser,
-    refreshAccessToken
+    refreshAccessToken,
+    changeCurrentPassword,
+    getCurrentUser,
+    updateAccountDetails,
+    updateUserAvatar,
+    updateCoverImage,
+    getUserChannelProfile,
+    getWatchHistory,
 } from "../controllers/user.controller.js";
 import { upload } from "../middlewares/multer.middleware.js";
 import { verifyJWT } from "../middlewares/auth.middleware.js";
@@ -13,6 +20,11 @@ const router = Router();
 /**
  * writing just .post(registerUser) executes registerUser method when any req in /register url.
  * But we want "jaane se pahele mujhe milke jaana" so write the middleware before the method.
+ *
+ * Look at how your Multer middleware is defined inside your route.js file:
+ *
+ * - Scenario A (Using upload.single): If your route uses upload.single("avatar"), Multer creates an Object called req.file. to get localPath req.file?.path .
+ * - Scenario B (Using upload.fields): If your route uses upload.fields([{ name: "avatar", maxCount: 1 }]), Multer creates an Array of Objects grouped inside req.files. To get localPath req.files?.avatar?.[0]?.path .
  */
 router.route("/register").post(
     upload.fields([
@@ -30,11 +42,28 @@ router.route("/register").post(
 
 router.route("/login").post(loginUser);
 
-// secured routes 
+// secured routes
 router.route("/logout").post(verifyJWT, logoutUser);
 // now after verifyJWT when logoutUser executes we've req.user inside logoutUser there we can get _id
 
 router.route("/refresh-token").post(refreshAccessToken);
+
+router.route("/change-password").post(verifyJWT, changeCurrentPassword);
+
+router.route("/current-user").get(verifyJWT, getCurrentUser);
+/* user isn't sending any data so no need of post use get */
+
+router.route("/update-account").patch(verifyJWT, updateAccountDetails);
+/* .patch (used to update datas) not .post (used to create new) */
+router
+    .route("/update-avatar")
+    .patch(verifyJWT, upload.single("avatar"), updateUserAvatar);
+router
+    .route("/update-coverImage")
+    .patch(verifyJWT, upload.single("coverImage"), updateCoverImage);
+
+router.route("/channel/:username").get(verifyJWT, getUserChannelProfile);
+router.route("/watch-history").get(verifyJWT, getWatchHistory);
 
 export default router;
 

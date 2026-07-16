@@ -1,9 +1,13 @@
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
 import { User } from "../models/user.model.js";
-import { uploadOnCloudinary } from "../utils/cloudinary.js";
+import {
+    uploadOnCloudinary,
+    deleteFromCloudinary,
+} from "../utils/cloudinary.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose";
 
 const generateAccessAndRefreshTokens = async (userId) => {
     try {
@@ -347,10 +351,27 @@ const updateAccountDetails = asyncHandler(async (req, res) => {
 });
 
 const updateUserAvatar = asyncHandler(async (req, res) => {
-    const avatarLocalPath = req.file?.url;
+    const avatarLocalPath = req.file?.path;
 
     if (!avatarLocalPath) {
         throw new ApiError(400, "Avatar file is missing");
+    }
+
+    const oldAvatarUrl = (await User.findById(req.user?._id))?.avatar;
+    let oldAvatarId = null;
+
+    if (oldAvatarUrl) {
+        try {
+            const rightSide = oldAvatarUrl.split("/upload/")[1];
+            if (rightSide) {
+                const cleanPath = rightSide.substring(
+                    rightSide.indexOf("/") + 1
+                );
+                oldAvatarId = cleanPath.split(".")[0];
+            }
+        } catch (error) {
+            console.log("Couldn't parse old avatar Id");
+        }
     }
 
     const avatar = await uploadOnCloudinary(avatarLocalPath);
@@ -368,9 +389,14 @@ const updateUserAvatar = asyncHandler(async (req, res) => {
         },
         {
             returnDocument: "after",
-            select: "-password -refreshToken",
+            select: "-password",
         }
     );
+
+    if (oldAvatarId) {
+        await deleteFromCloudinary(oldAvatarId);
+        console.log("Old Avatar deleted successfully");
+    }
 
     return res
         .status(200)
@@ -378,10 +404,26 @@ const updateUserAvatar = asyncHandler(async (req, res) => {
 });
 
 const updateCoverImage = asyncHandler(async (req, res) => {
-    const coverImageLocalPath = req.file?.url;
+    const coverImageLocalPath = req.file?.path;
 
     if (!coverImageLocalPath) {
         throw new ApiError(400, "Cover image file is missing");
+    }
+
+    const oldCoverImgUrl = (await User.findById(req.user._id))?.coverImage;
+    let oldCoverImgId = null;
+
+    if (oldCoverImgUrl) {
+        try {
+            const rightSide = oldCoverImgUrl.split("/upload/")[1];
+            if (rightSide) {
+                oldCoverImgId = rightSide
+                    .substring(rightSide.indexOf("/") + 1)
+                    ?.split(".")[0];
+            }
+        } catch (error) {
+            console.log("Couldn't parse old coverImg Id");
+        }
     }
 
     const coverImage = await uploadOnCloudinary(coverImageLocalPath);
@@ -406,10 +448,155 @@ const updateCoverImage = asyncHandler(async (req, res) => {
         }
     );
 
+    if (oldCoverImgId) {
+        await deleteFromCloudinary(oldCoverImgId);
+        console.log("Old Cover Image deleted successfully");
+    }
+
     return res
         .status(200)
         .json(new ApiResponse(200, user, "Cover image updated successfully"));
 });
+
+const getUserChannelProfile = asyncHandler(async (req, res) => {
+    const { username } = req.params; // values passed directly inside the URL path itself.
+
+    if (!username?.trim()) {
+        throw new ApiError(400, "username is missing");
+    }
+
+    const channel = await User.aggregate([
+        {
+            $match: {
+                username: username?.toLowerCase(),
+            },
+        },
+        {
+            // to find subscriber of that user
+            $lookup: {
+                from: "subscriptions", // The other collection to search inside
+                localField: "_id", // The key inside the current collection
+                foreignField: "channel", // The key inside the 'users' collection
+                as: "subscribers", // The name of the new array to put the result in
+            },
+        },
+        {
+            // to find subscribed by that user
+            $lookup: {
+                from: "subscriptions",
+                localField: "_id",
+                foreignField: "subscriber",
+                as: "subscribedTo",
+            },
+        },
+        {
+            $addFields: {
+                subscriberCount: {
+                    $size: "$subscribers",
+                },
+                channelsSubscribedToCount: {
+                    $size: "$subscribedTo",
+                },
+                isSubscribed: {
+                    $cond: {
+                        if: { $in: [req.user?._id, "$subscribers.subscriber"] },
+                        then: true,
+                        else: false,
+                    },
+                },
+            },
+        },
+        {
+            $project: {
+                fullName: 1,
+                username: 1,
+                email: 1,
+                subscriberCount: 1,
+                channelsSubscribedToCount: 1,
+                isSubscribed: 1,
+                avatar: 1,
+                coverImage: 1,
+                created_at: 1,
+            },
+        },
+    ]);
+
+    if (!channel?.length) {
+        throw new ApiError(404, "user does not exists");
+    }
+
+    console.log(channel);
+
+    return res
+        .status(200)
+        .json(
+            new ApiResponse(
+                200,
+                channel[0],
+                "user channel fetched successfully"
+            )
+        );
+});
+
+const getWatchHistory = asyncHandler(async (req, res) => {
+    const user = await User.aggregate([
+        {
+            $match: {
+                _id: new mongoose.Types.ObjectId(req.user._id),
+            },
+        },
+        {
+            $lookup: {
+                from: "videos",
+                localField: "watchHistory",
+                foreignField: "_id",
+                as: "watchHistory",
+            },
+            /* The reason you don't see an "_id" field defined inside your videoSchema code is because MongoDB and Mongoose automatically generate it for you behind the scenes and inject it automaticly. */
+
+            /* sub pipeline for owner */
+            pipeline: [
+                {
+                    $lookup: {
+                        from: "users",
+                        localField: "owner",
+                        foreignField: "_id",
+                        as: "owner",
+                        /* select fields to send clean data to frontend with extra pipeline */
+                        pipeline: [
+                            {
+                                $project: { // what if we do this filter outside? see Below.
+                                    fullName: 1,
+                                    username: 1,
+                                    avatar: 1,
+                                },
+                            },
+                        ],
+                    },
+                },
+                {
+                    $addFields: {
+                        owner: {
+                            $first: "$owner", // $owner b/c extract from field
+                        },
+                    },
+                },
+            ],
+        },
+    ]);
+
+    return res
+        .status(200)
+        .json(
+            new ApiResponse(
+                200,
+                user[0].watchHistory,
+                "watch history fetched successfully"
+            )
+        );
+});
+
+
 
 export {
     loginUser,
@@ -421,6 +608,8 @@ export {
     updateAccountDetails,
     updateUserAvatar,
     updateCoverImage,
+    getUserChannelProfile,
+    getWatchHistory,
 };
 
 /* Postman responce :
@@ -642,3 +831,280 @@ C. The Query Option {new: true} (Old depricated)
     -- If you want the document before the update was written: Use {returnDocument: 'before'} (Replaces new: false).
 
  */
+
+/** Agreegation Pipeline (You Need to Know Before Starting)
+ * 1. $match :
+ * - What it does: It filters your documents. It acts exactly like a regular .find(). If a document doesn't match your criteria, it gets thrown off the conveyor belt immediately.
+ * - Why we use it: To ensure the rest of the factory isn't wasting time processing data we don't need.
+ *
+ * 2. $project :
+ * - What it does: It selects, renames, or creates new fields while throwing away the fields you don't care about.
+ * - Why we use it: To shrink heavy documents down to a clean, lightweight object before sending it to the frontend.
+ *
+ * 3. $group :
+ * - What it does: It bundles documents together based on a shared value (like grouping users by their city, or orders by their product ID) and calculates totals.
+ * - Crucial Rule: It always requires an _id field to know what it is grouping by, and it usually uses accumulator operators like $sum or $avg.
+ *      {
+ *        $group: {
+ *          _id: "$city", // Group everyone by their city
+ *          totalUsers: { $sum: 1 }, // Count how many users are in each city
+ *          averageAge: { $avg: "$age" } // Calculate the average age per city
+ *        }
+ *      }
+ *
+ * 4. $lookup :
+ * - What it does: It goes into a completely different collection, finds documents that match an ID, and embeds them directly into the current document as an array.
+ * - Why we use it: MongoDB is non-relational, but sometimes we need to bridge two tables together.
+ *      {
+ *        $lookup: {
+ *          from: "users",         // The other collection to search inside
+ *          localField: "authorId", // The key inside the current collection
+ *          foreignField: "_id",    // The key inside the 'users' collection
+ *          as: "authorDetails"     // The name of the new array to put the result in
+ *        }
+ *      } */
+
+/** getUserChannelProfile (Step-by-Step Pipeline Breakdown) :
+ *
+ * This specific controller fetches the "Channel Profile" dashboard. It doesn't just grab basic user info—it dynamically calculates their subscriber count, how many people they follow, and checks if the currently logged-in user is subscribed to them.
+ *
+ * Part 1: The Express Setup Layer
+ *
+ *      const { username } = req.params;
+ *      if (!username?.trim()) {
+ *           throw new ApiError(400, "username is missing");
+ *      }
+ * - What it does: It plucks the username directly out of the URL path (e.g., /api/v1/c/hiteshchoudhary).
+ * - Why .trim() matters: It ensures that if someone sends trailing blank spaces (like ?username=hitesh  ), the spaces are wiped out so it doesn't break our database lookup query matching criteria.
+ *
+ * Part 2: The Aggregation Factory Assembly Line
+ * Now, your data drops into User.aggregate([]). Remember our conveyor belt analogy? MongoDB matches your document and sends it down the pipeline step by step.
+ * - Stage 1: $match (The Entry Bouncer)
+ *
+ *      {
+ *          $match: {
+ *              username: username?.toLowerCase(),
+ *          },
+ *      }
+ * -- How it works: It goes into your main users collection and pulls out the one single document where the username matches the requested string (lowercased for system consistency).
+ * -- Conveyor belt status: All other millions of users are thrown off the belt. Only the target channel user's document moves forward to Stage 2.
+ *
+ * - Stage 2: The First $lookup (Counting Incoming Subscribers)
+ *
+ *      {
+ *          $lookup: {
+ *              from: "subscriptions",
+ *              localField: "_id",
+ *              foreignField: "channel",
+ *              as: "subscribers",
+ *          },
+ *      }
+ * -- How it works: MongoDB leaves the users collection for a moment and hops into the subscriptions collection. It looks for every single subscription record where the channel ID matches our target user's _id.
+ * -- Conveyor belt status: It grabs all matching rows and embeds them directly onto our moving document inside a brand new array called "subscribers".
+ *
+ * - Stage 3: The Second $lookup (Counting Outgoing Subscriptions)
+ *
+ *      {
+ *          $lookup: {
+ *              from: "subscriptions",
+ *              localField: "_id",
+ *              foreignField: "subscriber",
+ *              as: "subscribedTo",
+ *          },
+ *      }
+ * -- How it works: It hops right back into the subscriptions collection, but checks a different field. It looks for rows where this channel user is listed as the subscriber (who they are following).
+ * -- Conveyor belt status: It embeds those matches into another new array field called "subscribedTo".
+ *
+ * - Stage 4: $addFields (The Calculator Machine)
+ * - This is an incredibly powerful stage. It takes the heavy array payloads we imported in Stages 2 and 3 and condenses them into useful metrics on the fly.
+ *      {
+ *          $addFields: {
+ *              subscriberCount: { $size: "$subscribers" },
+ *              channelsSubscribedToCount: { $size: "$subscribedTo" },
+ *
+ *              isSubscribed: {
+ *                  $cond: {
+ *                      if: { $in: [req.user?._id, "$subscribers.subscriber"] },
+ *                      then: true,
+ *                      else: false,
+ *                  },
+ *              },
+ *          },
+ *      }
+ * - $size: Instead of passing thousands of heavy subscription documents to the client, it just counts the array elements using $size and creates a single integer property (subscriberCount).
+ * - The $cond (Condition) Rule: This calculates a true/false status for the logged-in user. It looks inside the subscribers list, maps all the subscriber fields out, and checks: "Is the currently logged-in user's ID (req.user._id) found inside this channel's subscriber list?"
+ * -- If Yes (then), it appends isSubscribed: true.
+ * -- If No (else), it appends isSubscribed: false. This dictates whether the frontend displays a red "Subscribe" or grey "Unsubscribe" action button template layout!
+ *
+ * - Stage 5: $project (The Cleaner/Filter Machine)
+ *
+ *      {
+ *          $project: {
+ *              fullName: 1,
+ *              username: 1,
+ *              // ... list of fields set to 1 ...
+ *          }
+ *      }
+ * -- How it works: Now that all the math calculations are finished, we have massive arrays (subscribers and subscribedTo) cluttering up our document structure.
+ * -- Conveyor belt status: $project sweeps through, selects only the safe fields explicitly marked with a 1, and throws away the raw heavy data array blocks. The document is now light, clean, and safe for the public internet pipeline.
+ *
+ * Part 3: Wrapping Up the Request
+ *
+ *      if (!channel?.length) {
+ *          throw new ApiError(404, "user does not exist");
+ *      }
+ *
+ *      return res
+ *     .status(200)
+ *     .json(new ApiResponse(200, channel[0], "user channel fetched successfully"));
+ *
+ * Why channel[0]? MongoDB aggregate queries always return an array, even if they only found one matching document. Since we are looking up a unique username, the array will only contain one item. Writing channel[0] strips off the outer array bracket container so the frontend receives a clean, single JSON user object instead of a one-element list.
+ */
+
+
+/** getWatchHistory (Step-by-Step Pipeline Breakdown) :
+ * 
+ * Stage 1: $match (Isolating the User)
+ * 
+ *      {
+ *          $match: {
+ *              _id: new mongoose.Types.ObjectId(req.user._id)
+ *          }
+ *      }
+ * 
+ * - What it does: It grabs the document of the currently logged-in user.
+ * - Why "new mongoose.Types.ObjectId()" is used : In standard Mongoose commands (like findById), Mongoose automatically converts string IDs (5d6ede6a0ba62570afcedd3a) into MongoDB ObjectIds (ObjectId('5d6ede6a0ba62570afcedd3a')).
+ * - However, inside an aggregation pipeline, it will not do this for you. You must manually wrap the string ID in ObjectId(), or the query will silently fail to match anything.
+ * 
+ * Stage 2: The Outer $lookup (Populating the Videos)
+ * 
+ *      {
+ *          $lookup: {
+ *              from: "videos",
+ *              localField: "watchHistory",  // Array of Video ObjectIds in the user model
+ *              foreignField: "_id",
+ *              as: "watchHistory",     // Overwrites the ID array with full video objects
+ *              pipeline: [ ... ]       // Sub-pipeline running INSIDE the video data!
+ *          }
+ *      }
+ * 
+ * - What it does: The user document has a field called watchHistory, which is an array of video IDs: [ id1, id2, id3 ]. This stage travels to the videos collection and swaps those plain IDs for the full details of each video (title, duration, description, etc.).
+ * - The Overwrite Trick: By setting as: "watchHistory", it overwrites the original simple array of IDs with the newly fetched array of comprehensive video documents.
+ * - The pipeline Option: Instead of just bringing back raw video documents, we attach a custom sub-pipeline array right inside this lookup. This runs modifications on the video items themselves before they are joined to the user. We can write it outside also see at the last...
+ * 
+ * Stage 3: The Sub-Pipeline Layer (Inside the Videos)
+ * - Now we are running logic inside the array of videos that we are fetching.
+ * 
+ * - Sub-Stage A: The Inner $lookup (Fetching the Video Creator)
+ * 
+ *      {
+ *          $lookup: {
+ *              from: "users",
+ *              localField: "owner",       // The creator's ID inside the video document
+ *              foreignField: "_id",
+ *              as: "owner",               // Overwrites the owner field with user details
+ *              pipeline: [
+ *                  {
+ *                      $project: { fullName: 1, username: 1, avatar: 1 } // Security clean up
+ *                  }
+ *              ]
+ *          }
+ *      }
+ * -- What it does: For every video found in the history list, it looks at its owner field (the creator's ID) and goes back to the users collection to find their profile.
+ * -- The Security Filter: It passes a mini $project stage inside this inner lookup. This ensures we only pull the creator's fullName, username, and avatar. We safely filter out their private password hashes, refresh tokens, and email addresses.
+ * 
+ * - Sub-Stage B: $addFields with $first (Flattening the Array)
+ *      {
+ *          $addFields: {
+ *              owner: {
+ *                  $first: "$owner"
+ *              }
+ *          }
+ *      }
+ * -- Why this is necessary: Like we discovered earlier, all $lookup operations return an array, even if they only find one match. Without this stage, each video's owner field would look like this: owner: [{ username: "hitesh", ... }] (an array containing one object).
+ * -- What it does: Takes the first obj inside the array and Overwrites into owner again. The $first operator extracts the first element out of that array container($owner). This flattens the property down to a clean object layout: owner: { username: "hitesh", ... }, which is exactly what a frontend application expects.
+ * 
+ * Part 4: The Final Return Payload
+ * 
+ *      return res
+ *          .status(200)
+ *          .json(
+ *              new ApiResponse(
+ *                  200,
+ *                  user[0].watchHistory, // 💡 Notice what is being sent here!
+ *                  "Watch history fetched successfully"
+ *              )
+ *          )
+ * -- user[0]: The pipeline outputs an array containing our single user document. We access it via index 0.
+ * -- user[0].watchHistory: Instead of sending the entire user document (including their username, email, etc.) back to the client, we dig right into the object and only send the watchHistory array as the final JSON payload.
+ * 
+ * <------------------------------ ------------------------------>
+ * 
+ * Writing the $project stage 'inside the owner sub-pipeline' vs. writing it 'outside in the main pipeline' completely changes how data moves through the database engine. Both options work, but they create entirely different data structures along the way.
+ * 
+ * Scenario A: Writing it INSIDE the owner Sub-Pipeline (What your code does)
+ * - When you write the projection inside the sub-pipeline, it executes at the exact moment MongoDB pulls data out of the users collection, before it finishes the lookup join.
+ * 
+ *      $lookup: {
+ *          from: "users",
+ *          localField: "owner",
+ *          foreignField: "_id",
+ *          as: "owner",
+ *          pipeline: [
+ *              {
+ *                  $project: { fullName: 1, username: 1, avatar: 1 } // ⚡ Filter immediately at the source
+ *              }
+ *          ]
+ *      }
+ * 
+ * - The Conveyor Belt Layout:
+ * -- MongoDB hops over to the users collection to find the video owner.
+ * -- It pulls the user document, but immediately drops the password, email, and refresh tokens right there at the user collection station.
+ * -- It packages only the clean fields (fullName, username, avatar) into an object and hands it back to the video document.
+ * 
+ * - The Document Shape immediately after this lookup:
+ * 
+ *      {
+ *          title: "Learning Node.js",
+ *          videoFile: "...",
+ *          owner: [  // Array of clean objects
+ *              {
+ *                  fullName: "Hitesh Choudhary",
+ *                  username: "hiteshchoudhary",
+ *                  avatar: "..."
+ *              }
+ *          ]
+ *      }
+ * 
+ * Scenario B: Writing it OUTSIDE in the Main Pipeline
+ * 
+ * - What happens if you delete the inner pipeline block completely, let the $lookup bring back everything, and try to filter the fields later at the very end of your main query?
+ * - after the lookup has completed and joined everything filter like this ...
+ * 
+ * {
+ *     $project: {
+ *         // We are at the root user level now, so we have to use dot-notation
+ *         "watchHistory.title": 1,
+ *         "watchHistory.videoFile": 1,
+ *         "watchHistory.owner.fullName": 1,
+ *         "watchHistory.owner.username": 1,
+ *         "watchHistory.owner.avatar": 1
+ *     }
+ * }
+ * 
+ * Why doing this (outside) introduces friction and vulnerabilities:
+ * 
+ * - 1. The Security Hazard (Leaking Sensitive Data in Transit)
+ * -- Inside the database engine, when MongoDB performs the lookup join, it maps the entire raw user document—including your hashed password strings and private active refresh tokens—and carries that heavy payload across the network into the video document structure array. Even if you strip it out at the final main stage, that private data was temporarily exposed and floating around in your active database memory workspace.
+ * 
+ * - 2. Dotted Path Madness
+ * -- Because you are working from the main root level of the query, you cannot just write fullName: 1. You have to use extensive dotted string paths ("watchHistory.owner.fullName") to target fields buried deep inside nested arrays. This makes your code long, messy, and significantly harder to maintain as your models grow.
+ * - 3. RAM Performance Bottlenecks
+ * -- Bringing massive, unindexed fields (like heavy user tokens or history matrices) across a database join requires significant server memory footprint layouts. Filtering early inside the sub-pipeline keeps your working datasets lightweight and highly performant.
+ * 
+ * Summary Cheat Sheet
+ * - Filter Inside: Keeps data secure, keeps your data streams lightweight in memory, and makes your code cleaner by keeping the projection logic contextual to the collection it belongs to.
+ * - Filter Outside: Forces the database to carry heavy, sensitive data payload structures all the way to the end of the line, creating complex dotted notation paths at the root stage.
+ * 
+ */
+

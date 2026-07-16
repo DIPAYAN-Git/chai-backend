@@ -6,17 +6,20 @@ import jwt from "jsonwebtoken";
 /* It will only verify if user exists or not
 Strategy is to verify access & refresh tokens to verify true login and add a new obj into req req.user just like req.body, req.cookie. */
 
-export const verifyJWT = asyncHandler(async (req, _, next) => { // here res was written but not used anywhere can be replaced by '_' in production codes
+export const verifyJWT = asyncHandler(async (req, _, next) => {
+    // here res was written but not used anywhere can be replaced by '_' in production codes
     try {
         /* Now how to get access of tokens? Thanks to your cookie-parser middleware initialized in your main app.js file, Express parses those cookies and attaches them to req.cookies. */
 
         // console.log(req.cookies);
         // console.log(req.header("Authorization"));
-        
-        const token = req.cookies?.accessToken || (req.header("Authorization")?.replace("Bearer ", ""));
 
-        console.log("Token : ", token);
-        
+        const token =
+            req.cookies?.accessToken ||
+            req.header("Authorization")?.replace("Bearer ", "");
+
+        // console.log("Token : ", token);
+
         if (!token) {
             throw new ApiError(401, "Unauthorized request");
         }
@@ -25,13 +28,13 @@ export const verifyJWT = asyncHandler(async (req, _, next) => { // here res was 
 
         const decodedToken = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
 
-        console.log("decodedToken : ", decodedToken);
+        // console.log("decodedToken : ", decodedToken);
 
         const user = await User.findById(decodedToken?._id).select(
             "-password -refreshToken"
         );
 
-        console.log("user from decodedToken :", user);
+        // console.log("user from decodedToken :", user);
 
         if (!user) {
             throw new ApiError(401, "Invalid Access Token");
