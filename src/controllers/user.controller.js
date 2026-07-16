@@ -204,11 +204,11 @@ const logoutUser = asyncHandler(async (req, res) => {
     await User.findByIdAndUpdate(
         req.user._id,
         {
-            $set: {
-                refreshToken: undefined,
+            /* $set: { refreshToken: undefined }, */
+            /* OR */
+            $unset: {
+                refreshToken: 1 /* Removes the field value entirely from the document disk space (Better) */,
             },
-            /* OR
-            $unset: { refreshToken: 1 } // Removes the field value entirely from the document disk space */
         },
         {
             // new: true,
@@ -551,37 +551,38 @@ const getWatchHistory = asyncHandler(async (req, res) => {
                 localField: "watchHistory",
                 foreignField: "_id",
                 as: "watchHistory",
-            },
-            /* The reason you don't see an "_id" field defined inside your videoSchema code is because MongoDB and Mongoose automatically generate it for you behind the scenes and inject it automaticly. */
+                /* The reason you don't see an "_id" field defined inside your videoSchema code is because MongoDB and Mongoose automatically generate it for you behind the scenes and inject it automaticly. */
 
-            /* sub pipeline for owner */
-            pipeline: [
-                {
-                    $lookup: {
-                        from: "users",
-                        localField: "owner",
-                        foreignField: "_id",
-                        as: "owner",
-                        /* select fields to send clean data to frontend with extra pipeline */
-                        pipeline: [
-                            {
-                                $project: { // what if we do this filter outside? see Below.
-                                    fullName: 1,
-                                    username: 1,
-                                    avatar: 1,
+                /* sub pipeline for owner */
+                pipeline: [
+                    {
+                        $lookup: {
+                            from: "users",
+                            localField: "owner",
+                            foreignField: "_id",
+                            as: "owner",
+                            /* select fields to send clean data to frontend with extra pipeline */
+                            pipeline: [
+                                {
+                                    $project: {
+                                        // what if we do this filter outside? see Below.
+                                        fullName: 1,
+                                        username: 1,
+                                        avatar: 1,
+                                    },
                                 },
-                            },
-                        ],
-                    },
-                },
-                {
-                    $addFields: {
-                        owner: {
-                            $first: "$owner", // $owner b/c extract from field
+                            ],
                         },
                     },
-                },
-            ],
+                    {
+                        $addFields: {
+                            owner: {
+                                $first: "$owner", // $owner b/c extract from field
+                            },
+                        },
+                    },
+                ],
+            },
         },
     ]);
 
@@ -595,8 +596,6 @@ const getWatchHistory = asyncHandler(async (req, res) => {
             )
         );
 });
-
-
 
 export {
     loginUser,
@@ -961,23 +960,22 @@ C. The Query Option {new: true} (Old depricated)
  * Why channel[0]? MongoDB aggregate queries always return an array, even if they only found one matching document. Since we are looking up a unique username, the array will only contain one item. Writing channel[0] strips off the outer array bracket container so the frontend receives a clean, single JSON user object instead of a one-element list.
  */
 
-
 /** getWatchHistory (Step-by-Step Pipeline Breakdown) :
- * 
+ *
  * Stage 1: $match (Isolating the User)
- * 
+ *
  *      {
  *          $match: {
  *              _id: new mongoose.Types.ObjectId(req.user._id)
  *          }
  *      }
- * 
+ *
  * - What it does: It grabs the document of the currently logged-in user.
  * - Why "new mongoose.Types.ObjectId()" is used : In standard Mongoose commands (like findById), Mongoose automatically converts string IDs (5d6ede6a0ba62570afcedd3a) into MongoDB ObjectIds (ObjectId('5d6ede6a0ba62570afcedd3a')).
  * - However, inside an aggregation pipeline, it will not do this for you. You must manually wrap the string ID in ObjectId(), or the query will silently fail to match anything.
- * 
+ *
  * Stage 2: The Outer $lookup (Populating the Videos)
- * 
+ *
  *      {
  *          $lookup: {
  *              from: "videos",
@@ -987,16 +985,16 @@ C. The Query Option {new: true} (Old depricated)
  *              pipeline: [ ... ]       // Sub-pipeline running INSIDE the video data!
  *          }
  *      }
- * 
+ *
  * - What it does: The user document has a field called watchHistory, which is an array of video IDs: [ id1, id2, id3 ]. This stage travels to the videos collection and swaps those plain IDs for the full details of each video (title, duration, description, etc.).
  * - The Overwrite Trick: By setting as: "watchHistory", it overwrites the original simple array of IDs with the newly fetched array of comprehensive video documents.
  * - The pipeline Option: Instead of just bringing back raw video documents, we attach a custom sub-pipeline array right inside this lookup. This runs modifications on the video items themselves before they are joined to the user. We can write it outside also see at the last...
- * 
+ *
  * Stage 3: The Sub-Pipeline Layer (Inside the Videos)
  * - Now we are running logic inside the array of videos that we are fetching.
- * 
+ *
  * - Sub-Stage A: The Inner $lookup (Fetching the Video Creator)
- * 
+ *
  *      {
  *          $lookup: {
  *              from: "users",
@@ -1012,7 +1010,7 @@ C. The Query Option {new: true} (Old depricated)
  *      }
  * -- What it does: For every video found in the history list, it looks at its owner field (the creator's ID) and goes back to the users collection to find their profile.
  * -- The Security Filter: It passes a mini $project stage inside this inner lookup. This ensures we only pull the creator's fullName, username, and avatar. We safely filter out their private password hashes, refresh tokens, and email addresses.
- * 
+ *
  * - Sub-Stage B: $addFields with $first (Flattening the Array)
  *      {
  *          $addFields: {
@@ -1023,9 +1021,9 @@ C. The Query Option {new: true} (Old depricated)
  *      }
  * -- Why this is necessary: Like we discovered earlier, all $lookup operations return an array, even if they only find one match. Without this stage, each video's owner field would look like this: owner: [{ username: "hitesh", ... }] (an array containing one object).
  * -- What it does: Takes the first obj inside the array and Overwrites into owner again. The $first operator extracts the first element out of that array container($owner). This flattens the property down to a clean object layout: owner: { username: "hitesh", ... }, which is exactly what a frontend application expects.
- * 
+ *
  * Part 4: The Final Return Payload
- * 
+ *
  *      return res
  *          .status(200)
  *          .json(
@@ -1037,14 +1035,14 @@ C. The Query Option {new: true} (Old depricated)
  *          )
  * -- user[0]: The pipeline outputs an array containing our single user document. We access it via index 0.
  * -- user[0].watchHistory: Instead of sending the entire user document (including their username, email, etc.) back to the client, we dig right into the object and only send the watchHistory array as the final JSON payload.
- * 
+ *
  * <------------------------------ ------------------------------>
- * 
+ *
  * Writing the $project stage 'inside the owner sub-pipeline' vs. writing it 'outside in the main pipeline' completely changes how data moves through the database engine. Both options work, but they create entirely different data structures along the way.
- * 
+ *
  * Scenario A: Writing it INSIDE the owner Sub-Pipeline (What your code does)
  * - When you write the projection inside the sub-pipeline, it executes at the exact moment MongoDB pulls data out of the users collection, before it finishes the lookup join.
- * 
+ *
  *      $lookup: {
  *          from: "users",
  *          localField: "owner",
@@ -1056,14 +1054,14 @@ C. The Query Option {new: true} (Old depricated)
  *              }
  *          ]
  *      }
- * 
+ *
  * - The Conveyor Belt Layout:
  * -- MongoDB hops over to the users collection to find the video owner.
  * -- It pulls the user document, but immediately drops the password, email, and refresh tokens right there at the user collection station.
  * -- It packages only the clean fields (fullName, username, avatar) into an object and hands it back to the video document.
- * 
+ *
  * - The Document Shape immediately after this lookup:
- * 
+ *
  *      {
  *          title: "Learning Node.js",
  *          videoFile: "...",
@@ -1075,12 +1073,12 @@ C. The Query Option {new: true} (Old depricated)
  *              }
  *          ]
  *      }
- * 
+ *
  * Scenario B: Writing it OUTSIDE in the Main Pipeline
- * 
+ *
  * - What happens if you delete the inner pipeline block completely, let the $lookup bring back everything, and try to filter the fields later at the very end of your main query?
  * - after the lookup has completed and joined everything filter like this ...
- * 
+ *
  * {
  *     $project: {
  *         // We are at the root user level now, so we have to use dot-notation
@@ -1091,20 +1089,19 @@ C. The Query Option {new: true} (Old depricated)
  *         "watchHistory.owner.avatar": 1
  *     }
  * }
- * 
+ *
  * Why doing this (outside) introduces friction and vulnerabilities:
- * 
+ *
  * - 1. The Security Hazard (Leaking Sensitive Data in Transit)
  * -- Inside the database engine, when MongoDB performs the lookup join, it maps the entire raw user document—including your hashed password strings and private active refresh tokens—and carries that heavy payload across the network into the video document structure array. Even if you strip it out at the final main stage, that private data was temporarily exposed and floating around in your active database memory workspace.
- * 
+ *
  * - 2. Dotted Path Madness
  * -- Because you are working from the main root level of the query, you cannot just write fullName: 1. You have to use extensive dotted string paths ("watchHistory.owner.fullName") to target fields buried deep inside nested arrays. This makes your code long, messy, and significantly harder to maintain as your models grow.
  * - 3. RAM Performance Bottlenecks
  * -- Bringing massive, unindexed fields (like heavy user tokens or history matrices) across a database join requires significant server memory footprint layouts. Filtering early inside the sub-pipeline keeps your working datasets lightweight and highly performant.
- * 
+ *
  * Summary Cheat Sheet
  * - Filter Inside: Keeps data secure, keeps your data streams lightweight in memory, and makes your code cleaner by keeping the projection logic contextual to the collection it belongs to.
  * - Filter Outside: Forces the database to carry heavy, sensitive data payload structures all the way to the end of the line, creating complex dotted notation paths at the root stage.
- * 
+ *
  */
-
